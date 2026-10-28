@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# The ONLY installation entrypoint this toolkit recommends. It never wipes.
+set -euo pipefail
+if (( EUID != 0 )); then
+    echo 'Run as root from the booted Surface installation ISO.' >&2
+    exit 1
+fi
+if [[ $# -ne 2 || $1 != --disk ]]; then
+    echo 'Usage: sp11-cachy-install --disk /dev/nvme0n1' >&2
+    exit 2
+fi
+if [[ ! -f /root/sp11.json ]]; then
+    echo 'Missing the upstream Surface archinstall preset; stop.' >&2
+    exit 1
+fi
+python3 /usr/local/share/sp11-cachy/safety.py --disk "$2" --approve
+echo "Review the target AGAIN in archinstall. The approved device was: $2"
+exec archinstall --config /root/sp11.json
