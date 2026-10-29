@@ -41,7 +41,7 @@ jobs:
       - name: Upload ISO and provenance
         uses: actions/upload-artifact@v4
         with:
-          name: surface-pro11-oled-aarch64-cachy-style
+          name: surface-pro11-oled-aarch64-cachy-style-v2
           path: |
             work/sp11-staged/out/*.iso
             work/sp11-staged/build-receipt.json

@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Read-only Surface Pro 11 diagnostics; safe in the live USB or installed OS.
+set -u
+
+if [[ $# -ne 0 ]]; then
+    echo 'Usage: sp11-cachy-hwcheck (no arguments; never modifies hardware or disks)' >&2
+    exit 2
+fi
+
+firmware_status() {
+    local name=$1 candidate
+    for candidate in "/usr/lib/firmware/$name" "/usr/lib/firmware/$name.xz" "/usr/lib/firmware/$name.zst"; do
+        if [[ -r $candidate ]]; then
+            printf '  present: %s\n' "$name"
+            return
+        fi
+    done
+    printf '  MISSING: %s\n' "$name"
+}
+
+echo 'Surface Pro 11 hardware report (read-only)'
+printf 'Architecture: %s\n' "$(uname -m)"
+if [[ -d /run/archiso ]]; then
+    echo 'Environment: live USB (do not load audio DSP firmware here)'
+else
+    echo 'Environment: installed or other Linux system'
+fi
+
+echo 'Display connectors and available modes:'
+for modes in /sys/class/drm/*/modes; do
+    [[ -f $modes ]] || continue
+    printf '  %s: ' "${modes%/modes}"
+    head -n 1 "$modes" || true
+done
+
+echo 'Brightness:'
+for brightness in /sys/class/backlight/*/brightness; do
+    [[ -f $brightness ]] || continue
+    max="${brightness%/brightness}/max_brightness"
+    printf '  %s: %s / %s\n' "${brightness%/brightness}" \
+        "$(cat "$brightness")" "$(cat "$max" 2>/dev/null || echo '?')"
+done
+
+echo 'Battery and power:'
+for battery in /sys/class/power_supply/BAT*; do
+    [[ -d $battery ]] || continue
+    printf '  %s: %s, %s%%\n' "${battery##*/}" \
+        "$(cat "$battery/status" 2>/dev/null || echo unknown)" \
+        "$(cat "$battery/capacity" 2>/dev/null || echo '?')"
+done
+
+echo 'Graphics devices:'
+for device in /dev/dri/card* /dev/dri/renderD*; do
+    [[ -e $device ]] && printf '  %s\n' "$device"
+done
+echo 'Touchscreen input:'
+if [[ -r /proc/bus/input/devices ]]; then
+    grep -i 'Touchscreen' /proc/bus/input/devices || echo '  no touchscreen name reported'
+fi
+
+echo 'Bluetooth HCI interfaces:'
+found=0
+for controller in /sys/class/bluetooth/hci[0-9]*; do
+    [[ -d $controller ]] || continue
+    printf '  %s\n' "${controller##*/}"
+    found=1
+done
+if (( found == 0 )); then
+    echo '  NONE (kernel firmware messages alone are not proof of a usable adapter)'
+fi
+bluetooth_state=$(systemctl is-active bluetooth.service 2>/dev/null || true)
+printf 'Bluetooth service: %s\n' "${bluetooth_state:-unavailable}"
+
+echo 'ALSA sound cards:'
+if [[ -r /proc/asound/cards ]]; then
+    cat /proc/asound/cards
+else
+    echo '  none reported'
+fi
+
+echo 'Surface-specific proprietary firmware (never bundled in the ISO):'
+firmware_status 'qcom/x1e80100/microsoft/qcdxkmsuc8380.mbn'
+firmware_status 'qcom/x1e80100/microsoft/Denali/qcadsp8380.mbn'
+firmware_status 'qcom/x1e80100/microsoft/Denali/qcvss8380.mbn'
+
+echo 'Result interpretation: detection is not proof of 3D acceleration, audio safety,'
+echo 'Bluetooth pairing, touchscreen calibration, or suspend/resume.'

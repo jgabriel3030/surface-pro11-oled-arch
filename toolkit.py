@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent
 LOCK = json.loads((ROOT / "lock.json").read_text())
 DIGEST_IMAGE = re.compile(r"^[a-zA-Z0-9._/-]+@sha256:[a-fA-F0-9]{64}$")
 KERNEL_PARAMS = "clk_ignore_unused pd_ignore_unused arm64.nopauth systemd.mask=tpm2.target"
+LIVE_HARDWARE_PACKAGES = ("bluez", "bluez-utils", "evtest")
 
 
 def command(*args: str, cwd: Path | None = None) -> str:
@@ -56,13 +57,32 @@ def add_permissions(profile: Path) -> None:
     new = (
         '\n  ["/usr/local/bin/sp11-cachy-preflight"]="0:0:755"'
         '\n  ["/usr/local/bin/sp11-cachy-install"]="0:0:755"'
+        '\n  ["/usr/local/bin/sp11-cachy-hwcheck"]="0:0:755"'
         '\n  ["/usr/local/share/sp11-cachy/safety.py"]="0:0:644"'
         '\n  ["/usr/local/share/sp11-cachy/postinstall.sh"]="0:0:755"'
     )
     profile.write_text(data[:end] + new + data[end:])
 
 
-def modify_preset(path: Path, postinstall: Path) -> None:
+def add_live_hardware_packages(packages_file: Path) -> None:
+    """Add diagnostic utilities without changing the upstream kernel/profile."""
+    data = packages_file.read_text()
+    current = {line.split("#", 1)[0].strip() for line in data.splitlines()}
+    missing = [name for name in LIVE_HARDWARE_PACKAGES if name not in current]
+    if missing:
+        packages_file.write_text(data.rstrip("\n") +
+                                 "\n\n# Surface OLED hardware verification\n" +
+                                 "\n".join(missing) + "\n")
+
+
+def embedded_command(script: Path, destination: str) -> str:
+    encoded = base64.b64encode(script.read_bytes()).decode("ascii")
+    return (f"install -Dm755 /dev/null {destination} && "
+            f"printf '%s' '{encoded}' | base64 -d > {destination} && "
+            f"chmod 755 {destination}")
+
+
+def modify_preset(path: Path, postinstall: Path, hwcheck: Path) -> None:
     preset = json.loads(path.read_text())
     if preset.get("kernels") != ["linux-sp11"]:
         raise ValueError("Surface kernel changed upstream; stop and review")
@@ -74,12 +94,11 @@ def modify_preset(path: Path, postinstall: Path) -> None:
         raise ValueError("Surface custom commands changed upstream; stop and review")
     # Archinstall runs custom commands inside the new system. Embed an auditable,
     # local post-boot script without installing GUI packages during archinstall.
-    encoded = base64.b64encode(postinstall.read_bytes()).decode("ascii")
-    destination = "/usr/local/sbin/sp11-cachy-postinstall"
     preset["custom_commands"].append(
-        f"install -Dm755 /dev/null {destination} && "
-        f"printf '%s' '{encoded}' | base64 -d > {destination} && "
-        f"chmod 755 {destination}"
+        embedded_command(postinstall, "/usr/local/sbin/sp11-cachy-postinstall")
+    )
+    preset["custom_commands"].append(
+        embedded_command(hwcheck, "/usr/local/bin/sp11-cachy-hwcheck")
     )
     path.write_text(json.dumps(preset, indent=2) + "\n")
 
@@ -115,7 +134,9 @@ def prepare(source: Path, output: Path) -> Path:
     share = releng / "airootfs/usr/local/share/sp11-cachy"
     shutil.copy2(ROOT / "payload/postinstall.sh", share / "postinstall.sh")
     add_permissions(releng / "profiledef.sh")
-    modify_preset(releng / "airootfs/root/sp11.json", share / "postinstall.sh")
+    add_live_hardware_packages(releng / "packages.aarch64")
+    modify_preset(releng / "airootfs/root/sp11.json", share / "postinstall.sh",
+                  releng / "airootfs/usr/local/bin/sp11-cachy-hwcheck")
     manifest = {
         "schema": 1,
         "upstream_commit": LOCK["upstream_commit"],
@@ -139,11 +160,17 @@ def verify(staged: Path) -> dict:
             raise ValueError(f"Stage modification detected: {path}")
     preset = json.loads((staged / "configs/releng/airootfs/root/sp11.json").read_text())
     commands = preset.get("custom_commands", [])
-    if len(commands) != 3 or commands[1] != "linux-sp11-mkuki" or KERNEL_PARAMS not in commands[0]:
+    if len(commands) != 4 or commands[1] != "linux-sp11-mkuki" or KERNEL_PARAMS not in commands[0]:
         raise ValueError("Upstream kernel setup commands were altered")
     script = (staged / "configs/releng/airootfs/usr/local/share/sp11-cachy/postinstall.sh").read_bytes()
     if base64.b64encode(script).decode("ascii") not in commands[2]:
         raise ValueError("Installed post-boot script does not match the ISO payload")
+    hwcheck = (staged / "configs/releng/airootfs/usr/local/bin/sp11-cachy-hwcheck").read_bytes()
+    if base64.b64encode(hwcheck).decode("ascii") not in commands[3]:
+        raise ValueError("Installed hardware audit does not match the ISO payload")
+    packages = set((staged / "configs/releng/packages.aarch64").read_text().splitlines())
+    if not set(LIVE_HARDWARE_PACKAGES).issubset(packages):
+        raise ValueError("Live hardware verification packages are missing")
     if preset.get("bootloader_config", {}).get("uki") is not False:
         raise ValueError("Unsupported bootloader preset")
     return manifest
@@ -168,6 +195,7 @@ def build(staged: Path, image: str, execute: bool = False) -> list[str]:
         receipt = {"source_commit": LOCK["upstream_commit"], "builder_image": image,
                    "source_date_epoch": manifest["source_date_epoch"],
                    "iso_filename": images[0].name, "iso_sha256": filehash(images[0]),
+                   "live_packages_sha256": filehash(staged / "configs/releng/packages.aarch64"),
                    "note": "Package repositories are rolling; byte-identical builds not guaranteed"}
         (staged / "build-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
     return args

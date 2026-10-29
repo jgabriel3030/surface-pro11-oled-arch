@@ -1,7 +1,11 @@
 # Surface Pro 11 OLED AArch64 — Cachy-style Arch toolkit
 
-**Experimental prototype. Source staging and automated tests work; an actual
-ARM64 ISO build and boot on the Surface have NOT yet been performed.**
+**Experimental, field-tested first ISO.** The October 2026 GitHub Actions build
+successfully produced a bootable AArch64 ISO. A Surface Pro 11 OLED/X Elite
+booted that image into the live console, and the owner verified Wi-Fi,
+touchscreen events, battery charging, and native 2880×1920 display output.
+The **updated v2 ISO still requires a new ARM64 build and independent boot test**.
+Adreno acceleration, audio, Bluetooth pairing and sleep have NOT passed testing.
 
 This toolkit creates a customized edition of
 [dwhinham/archiso-aarch64-sp11](https://github.com/dwhinham/archiso-aarch64-sp11)
@@ -21,9 +25,11 @@ release is used or claimed.
 - Proprietary firmware is **never redistributed**. After installing, run
   `sp11-grab-fw` yourself on the installed system.
 
-The overlay contributes three things: (1) preflight and typed disk approval,
-(2) a small post-boot setup script embedded into the installed system by an
-added `archinstall` custom command, and (3) tests and build provenance.
+The overlay contributes: (1) preflight and typed disk approval; (2) a post-boot
+setup script and a **read-only hardware check** embedded into the installed
+system by added `archinstall` custom commands; (3) BlueZ and `evtest` on the
+live USB; and (4) tests and build provenance. See [FIELD_TESTS.md](FIELD_TESTS.md)
+for exactly what was observed on the real Surface.
 
 ## Fast path: build the ISO automatically on GitHub
 
@@ -33,7 +39,8 @@ added `archinstall` custom command, and (3) tests and build provenance.
    locked upstream, resolves the current builder image to an immutable digest,
    builds using the upstream `mkarchiso`, verifies and uploads the ISO plus its
    provenance receipt. No installation or partitioning happens in CI.
-4. Download the workflow artifact, verify its SHA-256 against
+4. Download the workflow artifact named
+   `surface-pro11-oled-aarch64-cachy-style-v2`, verify its SHA-256 against
    `build-receipt.json`, and boot-test it before deciding to erase Windows.
 
 Because the upstream repositories are rolling, an identical repo revision and
@@ -96,7 +103,23 @@ overwrites an existing staging directory.
    alter the preset's packages, bootloader, custom commands, or disabled UKI
    setting. Do **not** choose a desktop profile here.
 6. Boot the installed **command-line** Arch system and get online with `nmtui`.
-   Run `sudo sp11-grab-fw` to install proprietary GPU/other firmware. Then:
+   First run `sp11-cachy-hwcheck` to see what's missing. Extract/install the
+   GPU and other proprietary firmware only **after booting the installed
+   system**, not from the live USB:
+
+```sh
+sudo sp11-cachy-postinstall --firmware
+sudo reboot
+```
+
+This command requires a separate interactive confirmation before delegating
+to the upstream `sp11-grab-fw` utility. Reboot and rerun `sp11-cachy-hwcheck`;
+verify that the Adreno GPU no longer reports firmware load failures before
+proceeding. **No proprietary firmware files are built into or published with
+the ISO.** Some firmware, especially aDSP, has caused live-USB instability.
+
+7. Install Plasma and Cachy-style defaults only once the firmware checks look
+   appropriate for the installed system:
 
 ```sh
 sudo sp11-cachy-postinstall --dry-run
@@ -105,9 +128,24 @@ sudo reboot
 ```
 
 The first command is read-only. The second confirms its own pacman transaction
-and installs Plasma, SDDM, desktop tools and ZRAM. `archinstall` injects the
-`sp11-cachy-postinstall` script into the target without running it prematurely.
+and installs Plasma, SDDM, Bluetooth desktop components, PipeWire, and ZRAM.
+If `iptsd` is available in the configured repositories, the script also
+installs it; touchscreen calibration and pen gestures still need device-level
+verification. `archinstall` injects the setup and audit commands into the
+target without running them prematurely.
 If the command is missing, **stop and diagnose the archinstall logs**.
+
+**Bluetooth MAC addresses:** Edit `/etc/sp11-mac.conf` in the installed OS
+using the real addresses obtained from your own Windows installation, following
+the pinned upstream Surface guide. Do not commit private MAC addresses to this
+public GitHub repository, invent generic MACs, or assume that a healthy
+`bluetooth.service` means the Bluetooth adapter has registered. Surface-specific
+MAC fixup and real device pairing must be verified separately.
+
+**Audio caution:** Qualcomm audio DSP firmware was absent from the live image.
+The Surface project limits speaker volume because full hardware speaker
+protection is not yet implemented. Keep speakers muted until the correct
+Surface ALSA UCM profiles and safe volume limits have been confirmed.
 
 ## KDE and performance choices
 
@@ -115,24 +153,29 @@ If the command is missing, **stop and diagnose the archinstall logs**.
 | --- | --- |
 | Desktop | KDE Plasma / Breeze Dark, Wayland-capable session |
 | Login manager | SDDM enabled |
-| Networking | NetworkManager plus Plasma network and audio controls |
+| Networking | NetworkManager, BlueZ and KDE's Bluedevil controls |
+| Live diagnostics | `sp11-cachy-hwcheck`, `evtest`, `bluetoothctl` |
+| Audio stack | PipeWire/WirePlumber and upstream Surface ALSA UCM profiles; firmware separately |
 | Memory | `zram-generator`, Zstandard, virtual swap at half RAM |
 | Swapping | `vm.swappiness=100`, cache pressure 50 |
 | Display/GPU | Keep upstream Qualcomm/Adreno stack and `sp11-grab-fw` |
 | Kernel and scheduler | Keep `linux-sp11` kernel; no unsupported CachyOS kernel patches |
 | Power | Plasma power management, no forced high-performance governor/TLP |
-| Surface battery | Block duplicate `qcom_battmgr` driver as upstream recommends |
+| Surface battery | Block duplicate `qcom_battmgr` driver per upstream Surface SAM guidance |
 
 Expected from pinned upstream: NVMe, OLED brightness, GPU (after firmware),
-Wi-Fi, Bluetooth, attached keyboard, touch/pen, speakers/mic, and suspend are
-reported working to varying degrees. USB-C is partial; USB4 dock/Thunderbolt
-and cameras remain **unsupported**. This toolkit has not independently tested
-all capabilities on an OLED unit. Do not depend on a USB4 dock for setup.
+Wi-Fi, Bluetooth (with MAC fixup), attached keyboard, touch/pen, speakers/mic
+(speaker-protection caveat), and suspend are reported working to varying
+degrees. **Our independent live-USB test found GPU and audio firmware missing,
+and Bluetooth firmware booting but no adapter registered in BlueZ.** USB-C is
+partial; USB4 dock/Thunderbolt and cameras remain unsupported in the pinned
+release. Do not depend on a USB4 dock for setup.
 
 ## Rollback and recovery
 
 - `sudo sp11-cachy-postinstall --rollback` restores any original versions of
-  its **four config files**, and the prior SDDM-enabled state. It does not
+  its **four config files**, and the prior enabled states of SDDM,
+  NetworkManager, and Bluetooth. It does not
   uninstall KDE or downgrade packages, firmware or kernel. Reboot afterward.
 - A console remains available if KDE fails: use a virtual terminal or SSH,
   and inspect `journalctl -b -u sddm` and `pacman -Q linux-sp11`.
@@ -151,10 +194,21 @@ all capabilities on an OLED unit. Do not depend on a USB4 dock for setup.
 - Integration staging was performed against the actual locked upstream source;
   `toolkit.py verify` passed. The copier deliberately preserves upstream's
   absolute/dangling systemd symlinks.
-- **Not done:** build a complete ISO on an ARM64 runner, boot test on a Surface,
-  verify actual Plasma package availability in the ARM repository at install
-  time, test `archinstall` hook execution on hardware, test all OLED functions.
-  Treat the first image as experimental until those steps pass.
+- The first ISO **was built on the native ARM64 GitHub runner and USB-booted
+  successfully on the OLED Surface**. See `FIELD_TESTS.md` for the observed
+  hardware results and the precise missing Qualcomm firmware paths.
+- The updated version adds BlueZ and `evtest` to the live environment and
+  read-only hardware reporting without altering the Surface kernel or consent
+  flow. The existing live image's manual `pacman` install of BlueZ triggered an
+  `mkinitcpio` hook error because `/boot/vmlinuz-linux-sp11` was not readable
+  in live mode; the package still installed, but this is **not** a reason to
+  run boot-image repair commands on the USB. Bundling BlueZ at ISO build time
+  avoids that manual install during testing.
+- **Still not done:** boot-test the new image, independently verify the real
+  post-install Arch Plasma transaction and firmware extraction, validate
+  `archinstall` custom-command execution, or test hardware 3D acceleration,
+  Bluetooth pairing, audio safety, 120 Hz, cameras, or suspend/resume.
+  Keep Windows/recovery backups until these have been evaluated.
 
 ## Credits
 

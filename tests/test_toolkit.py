@@ -52,11 +52,24 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(manifest["upstream_commit"], toolkit.LOCK["upstream_commit"])
         preset = json.loads((staged / "configs/releng/airootfs/root/sp11.json").read_text())
         self.assertEqual(preset["custom_commands"][:2], [SAMPLE_COMMAND, "linux-sp11-mkuki"])
+        self.assertEqual(len(preset["custom_commands"]), 4)
         self.assertEqual(preset["kernels"], ["linux-sp11"])
         self.assertFalse(preset["bootloader_config"]["uki"])
         payload = (staged / "configs/releng/airootfs/usr/local/share/sp11-cachy/postinstall.sh").read_bytes()
         self.assertIn(base64.b64encode(payload).decode(), preset["custom_commands"][2])
-        self.assertNotIn("plasma", (staged / "configs/releng/packages.aarch64").read_text())
+        audit = (staged / "configs/releng/airootfs/usr/local/bin/sp11-cachy-hwcheck").read_bytes()
+        self.assertIn(base64.b64encode(audit).decode(), preset["custom_commands"][3])
+        packages = (staged / "configs/releng/packages.aarch64").read_text().splitlines()
+        self.assertNotIn("plasma-meta", packages)
+        for package in ("bluez", "bluez-utils", "evtest"):
+            self.assertEqual(packages.count(package), 1)
+
+    def test_live_packages_are_idempotent(self):
+        staged = self.stage()
+        packages = staged / "configs/releng/packages.aarch64"
+        first = packages.read_text()
+        toolkit.add_live_hardware_packages(packages)
+        self.assertEqual(packages.read_text(), first)
 
     def test_upstream_dangling_service_symlink_preserved(self):
         service = self.profile / "airootfs/etc/systemd/system/multi-user.target.wants"
@@ -115,8 +128,27 @@ class BuilderTests(unittest.TestCase):
             repo / "payload/postinstall.sh",
             repo / "overlay/airootfs/usr/local/bin/sp11-cachy-preflight",
             repo / "overlay/airootfs/usr/local/bin/sp11-cachy-install",
+            repo / "overlay/airootfs/usr/local/bin/sp11-cachy-hwcheck",
         ):
             subprocess.run(["bash", "-n", str(script)], check=True)
+
+    def test_live_hardware_report_is_readonly(self):
+        script = (Path(__file__).resolve().parents[1] /
+                  "overlay/airootfs/usr/local/bin/sp11-cachy-hwcheck")
+        result = subprocess.run(["bash", str(script)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("read-only", result.stdout)
+        self.assertIn("Bluetooth HCI", result.stdout)
+        for forbidden in ("wipefs", "sgdisk", "mkfs", "dd if=", "sp11-grab-fw", "pacman -S"):
+            self.assertNotIn(forbidden, script.read_text())
+
+    def test_firmware_install_is_separate_and_interactive(self):
+        script = (Path(__file__).resolve().parents[1] / "payload/postinstall.sh").read_text()
+        self.assertIn("--firmware) install_firmware", script)
+        self.assertIn("if [[ ! -t 0 ]]", script)
+        self.assertIn("INSTALL SURFACE FIRMWARE", script)
+        self.assertIn("[[ -d /run/archiso ]]", script)
+        self.assertIn("SERVICES=(sddm.service NetworkManager.service bluetooth.service)", script)
 
     def test_install_wrapper_only_launches_interactive_archinstall(self):
         wrapper = (Path(__file__).resolve().parents[1] /
