@@ -1,15 +1,17 @@
 # Surface Pro 11 OLED AArch64 — Cachy-style Arch toolkit
 
-**Experimental, field-tested first ISO.** The October 2026 GitHub Actions build
+**Experimental, dual-boot-only v3 source (not yet boot-tested).** The October 2026 GitHub Actions build
 successfully produced a bootable AArch64 ISO. A Surface Pro 11 OLED/X Elite
 booted that image into the live console, and the owner verified Wi-Fi,
 touchscreen events, battery charging, and native 2880×1920 display output.
-The **updated v2 ISO still requires a new ARM64 build and independent boot test**.
-Adreno acceleration, audio, Bluetooth pairing and sleep have NOT passed testing.
+The **new v3 dual-boot ISO requires a fresh ARM64 build and independent boot test**.
+Bluetooth controller discovery and nearby device scans were also verified on the
+live image after local MAC setup. Adreno acceleration, audio, Bluetooth pairing
+and sleep have NOT passed independent testing.
 
 This toolkit creates a customized edition of
 [dwhinham/archiso-aarch64-sp11](https://github.com/dwhinham/archiso-aarch64-sp11)
-for a **Surface Pro 11 OLED with Snapdragon X Elite**, using Arch Linux Ports
+for a **Surface Pro 11 Wi-Fi-only OLED with Snapdragon X Elite**, using Arch Linux Ports
 AArch64. It installs a **KDE Plasma desktop and selected CachyOS-like defaults**
 *after the first boot*. It is not official CachyOS: no official CachyOS AArch64
 release is used or claimed.
@@ -17,19 +19,29 @@ release is used or claimed.
 ## What is preserved
 
 - The upstream `linux-sp11` kernel, device trees, firmware packages,
-  repository keys, boot flags, systemd-boot and Surface-specific UKI generation.
-- The original two `archinstall` custom commands stay unchanged and in order.
+  repository keys, boot flags, and systemd-boot.
+- The original kernel command-line custom command stays unchanged. The second
+  upstream command generates UKIs for all Surface variants, so **v3 replaces it
+  with one Wi-Fi OLED-only UKI builder** to respect the existing 260 MB Windows
+  EFI partition. It measures capacity before writing and preserves Windows
+  Boot Manager. This is a new, untested installation modification.
 - The upstream live console installer stays intact. KDE is deliberately *not*
   added to the live image or installed during `archinstall`: the upstream
   maintainer warns that doing so can cause package conflicts.
 - Proprietary firmware is **never redistributed**. After installing, run
   `sp11-grab-fw` yourself on the installed system.
 
-The overlay contributes: (1) preflight and typed disk approval; (2) a post-boot
+The overlay contributes: (1) read-only checks of the existing four Windows GPT
+partitions and a 140+ GiB unallocated gap, followed by typed dual-boot approval;
+(2) an OLED-only UKI generation script and kernel-update hook; (3) a post-boot
 setup script and a **read-only hardware check** embedded into the installed
-system by added `archinstall` custom commands; (3) BlueZ and `evtest` on the
-live USB; and (4) tests and build provenance. See [FIELD_TESTS.md](FIELD_TESTS.md)
+system by added `archinstall` custom commands; (4) BlueZ and `evtest` on the
+live USB; and (5) tests and build provenance. See [FIELD_TESTS.md](FIELD_TESTS.md)
 for exactly what was observed on the real Surface.
+
+**Start with the complete, device-specific [DUAL_BOOT_GUIDE.md](DUAL_BOOT_GUIDE.md).**
+The preflight script does not control archinstall's menu: automatic partitioning
+or incorrect manual formatting can still destroy Windows.
 
 ## Fast path: build the ISO automatically on GitHub
 
@@ -40,8 +52,8 @@ for exactly what was observed on the real Surface.
    builds using the upstream `mkarchiso`, verifies and uploads the ISO plus its
    provenance receipt. No installation or partitioning happens in CI.
 4. Download the workflow artifact named
-   `surface-pro11-oled-aarch64-cachy-style-v2`, verify its SHA-256 against
-   `build-receipt.json`, and boot-test it before deciding to erase Windows.
+   `surface-pro11-oled-aarch64-cachy-style-v3-dualboot`, verify its SHA-256
+   against `build-receipt.json`, and boot-test it before any disk changes.
 
 Because the upstream repositories are rolling, an identical repo revision and
 container **do not guarantee an identical package set or byte-identical ISO**.
@@ -79,30 +91,38 @@ instead of cloning with `--source /path/to/archiso-aarch64-sp11`; it must be at
 the exact commit in `lock.json` and completely clean. The builder never silently
 overwrites an existing staging directory.
 
-## Install on the Surface — two separate consent points
+## Install on the Surface — preserve Windows
 
-1. **Before even booting Linux:** back up everything on Windows. Save any
-   BitLocker/device-encryption recovery key. Prepare and test an official
-   Surface Windows recovery USB. Erasing Windows also erases the on-device
-   Windows recovery partition. A recovery USB and backups are the real rollback.
-2. Follow the upstream boot process precisely: disable Secure Boot in Surface
-   UEFI; flash the ISO with Balena Etcher or a raw write (not Ventoy/Rufus);
-   hold Volume Up while rebooting, open UEFI Boot Configuration, and **swipe**
-   USB Storage to boot. A black screen for 2–3 minutes can be normal.
-3. From the live console, inspect `lsblk -o NAME,PATH,SIZE,MODEL,SERIAL,TYPE`.
-   Then run `sp11-cachy-preflight --disk /dev/nvme0n1`, substituting the real
-   **internal NVMe whole-device** path. If a safety check fails, stop.
-4. Run `sp11-cachy-install --disk /dev/nvme0n1` with that same disk path.
-   Approval requires typing `ERASE <device> <device-specific-code>` exactly.
-   **This command itself never partitions/wipes**; after approval it opens the
-   standard interactive `archinstall` with `/root/sp11.json`.
-5. **Review the selected disk AGAIN inside archinstall.** The approval wrapper
-   cannot lock archinstall to the chosen disk. If the selected disk differs,
-   cancel. For the easiest Windows replacement, use FAT32 EFI mounted at
-   `/boot`, `ext4` mounted at `/`, and follow the installer prompts. Do not
-   alter the preset's packages, bootloader, custom commands, or disabled UKI
-   setting. Do **not** choose a desktop profile here.
-6. Boot the installed **command-line** Arch system and get online with `nmtui`.
+**The old erase-Windows instructions and commands are obsolete.** Use
+[DUAL_BOOT_GUIDE.md](DUAL_BOOT_GUIDE.md) for the complete sequence, including
+backups, preflight, careful manual partitioning, boot verification and recovery.
+
+The expected disk is `/dev/nvme0n1`, with the existing 260 MB FAT32 EFI p1,
+16 MB Windows MSR p2, ~324.67 GB NTFS Windows C: p3, **150 GB unallocated**,
+and 2 GB Windows Recovery p4. Preserve p1–p4. Create only a new Linux ext4
+root partition in the unallocated gap; reuse EFI p1 at `/boot` **without
+formatting**. The custom UKI builder writes only the Wi-Fi OLED image and
+refuses to fill the EFI partition below a 64 MiB free reserve. Never let
+archinstall generate an automatic partition layout.
+
+First run the read-only command:
+
+```sh
+sp11-cachy-preflight --disk /dev/nvme0n1
+```
+
+After backup, recovery USB, preflight success, and review of the full guide:
+
+```sh
+sp11-cachy-install --dual-boot --disk /dev/nvme0n1
+```
+
+This requests `DUALBOOT /dev/nvme0n1 <device-specific-code>` and then launches
+interactive archinstall. **It cannot prevent a mistaken archinstall selection.**
+Stop and share a photo of the final partition summary before confirming writes.
+
+Once installation and Windows boot verification have succeeded, boot the new
+**command-line** Arch system and get online with `nmtui`.
    First run `sp11-cachy-hwcheck` to see what's missing. Extract/install the
    GPU and other proprietary firmware only **after booting the installed
    system**, not from the live USB:
@@ -118,7 +138,7 @@ verify that the Adreno GPU no longer reports firmware load failures before
 proceeding. **No proprietary firmware files are built into or published with
 the ISO.** Some firmware, especially aDSP, has caused live-USB instability.
 
-7. Install Plasma and Cachy-style defaults only once the firmware checks look
+Install Plasma and Cachy-style defaults only once the firmware checks look
    appropriate for the installed system:
 
 ```sh
@@ -182,29 +202,32 @@ release. Do not depend on a USB4 dock for setup.
 - For Linux boot recovery, boot the original known-good Surface ISO and consult
   the maintainer's bootloader/UKI guidance. The toolkit has not implemented an
   unattended EFI repair tool.
-- For a *full* pre-install rollback, restore Windows using the official Surface
-  recovery USB and your backup. A configuration rollback cannot resurrect
-  erased Windows partitions.
+- If Linux fails to boot, use the Surface UEFI boot menu to select the
+  preserved Windows Boot Manager, and diagnose Linux separately. Do not
+  format any Windows partition as a repair attempt. Keep official Surface
+  recovery USB and external Windows backups as disaster recovery.
 
 ## Verification performed and remaining work
 
 - Unit tests cover source pin and boot preset guards, profile preservation,
-  fail-closed disk policy, required human confirmation, manifest integrity,
-  strict build-container digest and default build preview behavior.
+  fail-closed dual-boot GPT and free-space policy, human confirmation,
+  OLED-only UKI embedding, manifest integrity, strict build-container digest
+  and default build preview behavior.
 - Integration staging was performed against the actual locked upstream source;
   `toolkit.py verify` passed. The copier deliberately preserves upstream's
   absolute/dangling systemd symlinks.
 - The first ISO **was built on the native ARM64 GitHub runner and USB-booted
   successfully on the OLED Surface**. See `FIELD_TESTS.md` for the observed
   hardware results and the precise missing Qualcomm firmware paths.
-- The updated version adds BlueZ and `evtest` to the live environment and
+- The v2 update added BlueZ and `evtest` to the live environment and
   read-only hardware reporting without altering the Surface kernel or consent
   flow. The existing live image's manual `pacman` install of BlueZ triggered an
   `mkinitcpio` hook error because `/boot/vmlinuz-linux-sp11` was not readable
   in live mode; the package still installed, but this is **not** a reason to
   run boot-image repair commands on the USB. Bundling BlueZ at ISO build time
   avoids that manual install during testing.
-- **Still not done:** boot-test the new image, independently verify the real
+- **Still not done:** build and boot-test v3, verify the new single-UKI writer
+  against the actual installed `linux-sp11` package and 260 MB ESP, independently verify the real
   post-install Arch Plasma transaction and firmware extraction, validate
   `archinstall` custom-command execution, or test hardware 3D acceleration,
   Bluetooth pairing, audio safety, 120 Hz, cameras, or suspend/resume.
