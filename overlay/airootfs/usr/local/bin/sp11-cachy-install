@@ -5,14 +5,16 @@ if (( EUID != 0 )); then
     echo 'Run as root from the booted Surface installation ISO.' >&2
     exit 1
 fi
-if [[ $# -ne 2 || $1 != --disk ]]; then
-    echo 'Usage: sp11-cachy-install --disk /dev/nvme0n1' >&2
+if [[ $# -ne 3 || $1 != --dual-boot || $2 != --disk ]]; then
+    echo 'Usage: sp11-cachy-install --dual-boot --disk /dev/nvme0n1' >&2
     exit 2
 fi
 if [[ ! -f /root/sp11.json ]]; then
     echo 'Missing the upstream Surface archinstall preset; stop.' >&2
     exit 1
 fi
-python3 /usr/local/share/sp11-cachy/safety.py --disk "$2" --approve
-echo "Review the target AGAIN in archinstall. The approved device was: $2"
+python3 /usr/local/share/sp11-cachy/safety.py --disk "$3" --approve
+echo "STOP if archinstall proposes wiping the disk or formatting Windows EFI."
+echo "ONLY use manual partitioning: preserve Windows partitions 1-4, format NEW Linux root."
+echo "Review the target AGAIN in archinstall. The inspected disk was: $3"
 exec archinstall --config /root/sp11.json
