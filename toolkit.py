@@ -60,6 +60,8 @@ def add_permissions(profile: Path) -> None:
         '\n  ["/usr/local/bin/sp11-cachy-hwcheck"]="0:0:755"'
         '\n  ["/usr/local/share/sp11-cachy/safety.py"]="0:0:644"'
         '\n  ["/usr/local/share/sp11-cachy/postinstall.sh"]="0:0:755"'
+        '\n  ["/usr/local/share/sp11-cachy/oled-mkuki.sh"]="0:0:755"'
+        '\n  ["/usr/local/share/sp11-cachy/95-linux-sp11-uki.hook"]="0:0:644"'
     )
     profile.write_text(data[:end] + new + data[end:])
 
@@ -75,14 +77,15 @@ def add_live_hardware_packages(packages_file: Path) -> None:
                                  "\n".join(missing) + "\n")
 
 
-def embedded_command(script: Path, destination: str) -> str:
+def embedded_command(script: Path, destination: str, mode: str = "755") -> str:
     encoded = base64.b64encode(script.read_bytes()).decode("ascii")
-    return (f"install -Dm755 /dev/null {destination} && "
+    return (f"install -Dm{mode} /dev/null {destination} && "
             f"printf '%s' '{encoded}' | base64 -d > {destination} && "
-            f"chmod 755 {destination}")
+            f"chmod {mode} {destination}")
 
 
-def modify_preset(path: Path, postinstall: Path, hwcheck: Path) -> None:
+def modify_preset(path: Path, postinstall: Path, hwcheck: Path,
+                  oledmkuki: Path, hook: Path) -> None:
     preset = json.loads(path.read_text())
     if preset.get("kernels") != ["linux-sp11"]:
         raise ValueError("Surface kernel changed upstream; stop and review")
@@ -92,8 +95,19 @@ def modify_preset(path: Path, postinstall: Path, hwcheck: Path) -> None:
     original = preset.get("custom_commands", [])
     if len(original) != 2 or original[1] != "linux-sp11-mkuki" or KERNEL_PARAMS not in original[0]:
         raise ValueError("Surface custom commands changed upstream; stop and review")
-    # Archinstall runs custom commands inside the new system. Embed an auditable,
-    # local post-boot script without installing GUI packages during archinstall.
+    # The original second command builds FOUR UKIs. On the existing 260 MB
+    # Windows ESP this could overwrite available space. Replace that command
+    # with an OLED-only, measured build and override the upstream pacman hook.
+    # Keep the original Surface kernel command line unchanged.
+    preset["custom_commands"] = [original[0]]
+    preset["custom_commands"].append(
+        embedded_command(oledmkuki, "/usr/local/sbin/sp11-cachy-oled-mkuki")
+    )
+    preset["custom_commands"].append(
+        embedded_command(hook, "/etc/pacman.d/hooks/95-linux-sp11-uki.hook", "644")
+    )
+    preset["custom_commands"].append("/usr/local/sbin/sp11-cachy-oled-mkuki")
+    # Archinstall executes the following payload only inside the new system.
     preset["custom_commands"].append(
         embedded_command(postinstall, "/usr/local/sbin/sp11-cachy-postinstall")
     )
@@ -133,10 +147,13 @@ def prepare(source: Path, output: Path) -> Path:
     shutil.copytree(ROOT / "overlay/airootfs", releng / "airootfs", dirs_exist_ok=True)
     share = releng / "airootfs/usr/local/share/sp11-cachy"
     shutil.copy2(ROOT / "payload/postinstall.sh", share / "postinstall.sh")
+    shutil.copy2(ROOT / "payload/oled-mkuki.sh", share / "oled-mkuki.sh")
+    shutil.copy2(ROOT / "payload/95-linux-sp11-uki.hook", share / "95-linux-sp11-uki.hook")
     add_permissions(releng / "profiledef.sh")
     add_live_hardware_packages(releng / "packages.aarch64")
     modify_preset(releng / "airootfs/root/sp11.json", share / "postinstall.sh",
-                  releng / "airootfs/usr/local/bin/sp11-cachy-hwcheck")
+                  releng / "airootfs/usr/local/bin/sp11-cachy-hwcheck",
+                  share / "oled-mkuki.sh", share / "95-linux-sp11-uki.hook")
     manifest = {
         "schema": 1,
         "upstream_commit": LOCK["upstream_commit"],
@@ -160,13 +177,16 @@ def verify(staged: Path) -> dict:
             raise ValueError(f"Stage modification detected: {path}")
     preset = json.loads((staged / "configs/releng/airootfs/root/sp11.json").read_text())
     commands = preset.get("custom_commands", [])
-    if len(commands) != 4 or commands[1] != "linux-sp11-mkuki" or KERNEL_PARAMS not in commands[0]:
-        raise ValueError("Upstream kernel setup commands were altered")
-    script = (staged / "configs/releng/airootfs/usr/local/share/sp11-cachy/postinstall.sh").read_bytes()
-    if base64.b64encode(script).decode("ascii") not in commands[2]:
-        raise ValueError("Installed post-boot script does not match the ISO payload")
+    if (len(commands) != 6 or KERNEL_PARAMS not in commands[0] or
+            commands[3] != "/usr/local/sbin/sp11-cachy-oled-mkuki"):
+        raise ValueError("OLED-only kernel setup commands were altered")
+    for path, index in (("oled-mkuki.sh", 1), ("95-linux-sp11-uki.hook", 2),
+                        ("postinstall.sh", 4)):
+        payload = (staged / "configs/releng/airootfs/usr/local/share/sp11-cachy" / path).read_bytes()
+        if base64.b64encode(payload).decode("ascii") not in commands[index]:
+            raise ValueError(f"Installed {path} does not match the ISO payload")
     hwcheck = (staged / "configs/releng/airootfs/usr/local/bin/sp11-cachy-hwcheck").read_bytes()
-    if base64.b64encode(hwcheck).decode("ascii") not in commands[3]:
+    if base64.b64encode(hwcheck).decode("ascii") not in commands[5]:
         raise ValueError("Installed hardware audit does not match the ISO payload")
     packages = set((staged / "configs/releng/packages.aarch64").read_text().splitlines())
     if not set(LIVE_HARDWARE_PACKAGES).issubset(packages):
