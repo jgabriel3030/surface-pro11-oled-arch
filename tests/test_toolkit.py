@@ -51,14 +51,18 @@ class BuilderTests(unittest.TestCase):
         manifest = toolkit.verify(staged)
         self.assertEqual(manifest["upstream_commit"], toolkit.LOCK["upstream_commit"])
         preset = json.loads((staged / "configs/releng/airootfs/root/sp11.json").read_text())
-        self.assertEqual(preset["custom_commands"][:2], [SAMPLE_COMMAND, "linux-sp11-mkuki"])
-        self.assertEqual(len(preset["custom_commands"]), 4)
+        self.assertEqual(preset["custom_commands"][0], SAMPLE_COMMAND)
+        self.assertEqual(preset["custom_commands"][3], "/usr/local/sbin/sp11-cachy-oled-mkuki")
+        self.assertEqual(len(preset["custom_commands"]), 6)
         self.assertEqual(preset["kernels"], ["linux-sp11"])
         self.assertFalse(preset["bootloader_config"]["uki"])
         payload = (staged / "configs/releng/airootfs/usr/local/share/sp11-cachy/postinstall.sh").read_bytes()
-        self.assertIn(base64.b64encode(payload).decode(), preset["custom_commands"][2])
+        self.assertIn(base64.b64encode(payload).decode(), preset["custom_commands"][4])
         audit = (staged / "configs/releng/airootfs/usr/local/bin/sp11-cachy-hwcheck").read_bytes()
-        self.assertIn(base64.b64encode(audit).decode(), preset["custom_commands"][3])
+        self.assertIn(base64.b64encode(audit).decode(), preset["custom_commands"][5])
+        for name, position in (("oled-mkuki.sh", 1), ("95-linux-sp11-uki.hook", 2)):
+            source = staged / "configs/releng/airootfs/usr/local/share/sp11-cachy" / name
+            self.assertIn(base64.b64encode(source.read_bytes()).decode(), preset["custom_commands"][position])
         packages = (staged / "configs/releng/packages.aarch64").read_text().splitlines()
         self.assertNotIn("plasma-meta", packages)
         for package in ("bluez", "bluez-utils", "evtest"):
@@ -126,6 +130,7 @@ class BuilderTests(unittest.TestCase):
         repo = Path(__file__).resolve().parents[1]
         for script in (
             repo / "payload/postinstall.sh",
+            repo / "payload/oled-mkuki.sh",
             repo / "overlay/airootfs/usr/local/bin/sp11-cachy-preflight",
             repo / "overlay/airootfs/usr/local/bin/sp11-cachy-install",
             repo / "overlay/airootfs/usr/local/bin/sp11-cachy-hwcheck",
@@ -154,8 +159,21 @@ class BuilderTests(unittest.TestCase):
         wrapper = (Path(__file__).resolve().parents[1] /
                    "overlay/airootfs/usr/local/bin/sp11-cachy-install").read_text()
         self.assertIn('exec archinstall --config /root/sp11.json', wrapper)
+        self.assertIn('--dual-boot', wrapper)
+        self.assertNotIn('ERASE ', wrapper)
         for forbidden in ("wipefs", "sgdisk", "parted", "mkfs", "dd if=", "--noconfirm"):
             self.assertNotIn(forbidden, wrapper)
+
+    def test_oled_boot_does_not_generate_other_variants(self):
+        repo = Path(__file__).resolve().parents[1]
+        script = (repo / "payload/oled-mkuki.sh").read_text()
+        self.assertIn("x1e80100-microsoft-denali-oled.dtb", script)
+        self.assertNotIn("oled-5g", script)
+        self.assertNotIn("-lcd.dtb", script)
+        self.assertIn("reserve=$((64 * 1024 * 1024))", script)
+        self.assertIn('bootmgfw.efi', script)
+        hook = (repo / "payload/95-linux-sp11-uki.hook").read_text()
+        self.assertIn("Exec = /usr/local/sbin/sp11-cachy-oled-mkuki", hook)
 
 
 if __name__ == "__main__":
