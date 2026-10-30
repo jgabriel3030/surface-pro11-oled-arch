@@ -1,0 +1,12 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = linux-sp11
+Target = linux-sp11-dtbs
+Target = linux-sp11-uki
+
+[Action]
+Description = Building Surface Pro 11 Wi-Fi OLED-only UKI...
+When = PostTransaction
+Exec = /usr/local/sbin/sp11-cachy-oled-mkuki
